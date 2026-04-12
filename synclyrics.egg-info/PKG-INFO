@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: synclyrics
+Version: 1.0.0
+Summary: A premium desktop lyrics player for Linux with karaoke mode and audio visualizer
+Requires-Python: >=3.10
+Requires-Dist: PyQt6>=6.5
+Requires-Dist: numpy
+Requires-Dist: requests
+Requires-Dist: unidecode
+Provides-Extra: visualizer
+Requires-Dist: pyaudio; extra == "visualizer"
+Provides-Extra: japanese
+Requires-Dist: pykakasi; extra == "japanese"
+Provides-Extra: chinese
+Requires-Dist: pypinyin; extra == "chinese"
+Provides-Extra: all
+Requires-Dist: pyaudio; extra == "all"
+Requires-Dist: pykakasi; extra == "all"
+Requires-Dist: pypinyin; extra == "all"

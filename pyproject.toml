@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synclyrics"
+version = "1.0.0"
+description = "A premium desktop lyrics player for Linux with karaoke mode and audio visualizer"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.5",
+    "numpy",
+    "requests",
+    "unidecode",
+]
+
+[project.optional-dependencies]
+visualizer = ["pyaudio"]
+japanese = ["pykakasi"]
+chinese = ["pypinyin"]
+all = ["pyaudio", "pykakasi", "pypinyin"]
+
+[project.scripts]
+synclyrics = "synclyrics.main:main"
+
+[tool.setuptools.packages.find]
+include = ["synclyrics*"]

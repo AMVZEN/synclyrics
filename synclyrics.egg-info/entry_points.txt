@@ -1,0 +1,2 @@
+[console_scripts]
+synclyrics = synclyrics.main:main
