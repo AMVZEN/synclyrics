@@ -2,16 +2,14 @@
 
 **SyncLyrics** is a premium, terminal-inspired desktop lyrics player for Linux. It provides a high-fidelity, synchronized karaoke experience with a built-in fluid audio visualizer and a sleek, translucent design.
 
-![SyncLyrics Screenshot](https://github.com/AMVZEN/synclyrics/raw/main/icon.png)
+![SyncLyrics Screenshot]([https://github.com/AMVZEN/synclyrics/raw/main/icon.png](https://github.com/AMVZEN/synclyrics/blob/main/Example.png))
 
 ## ✨ Features
 
-- **Synced Karaoke Mode**: Word-for-word and line-by-line lyric highlighting.
 - **Fluid Audio Visualizer**: Real-time audio analysis with smooth wave animations.
-- **Stealth Mode Cycle**: Toggle between multiple UI states (All Info → Lyrics+Vis → Lyrics only).
+- **Ui Mode Cycle**: Toggle between multiple UI states (All Info → Lyrics+Vis → Lyrics only).
 - **Mpris Integration**: Automatically detects and follows playback from Spotify, VLC, MPD, and more.
 - **Nerd Font Support**: Utilizes premium iconography for a modern developer aesthetic.
-- **Translucent UI**: Blurs seamlessly into your desktop environment.
 
 ## 🚀 Installation
 
@@ -23,7 +21,7 @@ yay -S synclyrics
 ```
 
 ### Manual Installation (Local Build)
-If you want to compile and run SyncLyrics from source:
+Compile and run SyncLyrics from source:
 
 1. **Clone the repository**:
    ```bash
@@ -44,7 +42,7 @@ If you want to compile and run SyncLyrics from source:
 
 ## 🛠 Usage
 
-- **Stealth Toggle (󰒲)**: Click the moon icon to cycle through UI visibility modes.
+- **Ui Toggle (󰒲)**: Click the moon icon to cycle through UI visibility modes.
 - **Sync Button (󰑐)**: Manually force a lyric refresh/sync with the current player.
 - **Offset Controls (±)**: Adjust lyric timing on the fly if the sync is slightly off.
 
