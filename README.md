@@ -1,9 +1,9 @@
 # 🎶 SyncLyrics
 
 **SyncLyrics** is a premium, terminal-inspired desktop lyrics player for Linux. It provides a high-fidelity, synchronized karaoke experience with a built-in fluid audio visualizer and a sleek, translucent design.
+
 <img width="1879" height="989" alt="Example" src="https://github.com/user-attachments/assets/995e21f2-778c-48a7-b95f-d7e6521b2033" />
 
-![SyncLyrics Screenshot](<img width="1879" height="989" alt="Example" src="https://github.com/user-attachments/assets/995e21f2-778c-48a7-b95f-d7e6521b2033" />)
 
 ## ✨ Features
 
