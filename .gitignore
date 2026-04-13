@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+aur-pkg/pkg/
+aur-pkg/src/
+aur-pkg/*.pkg.tar.zst
+aur-pkg/*.tar.gz
+.gemini/

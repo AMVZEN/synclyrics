@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QColor, QPainterPath, QLinearGradient, QBrush, QPen
+from PyQt6.QtGui import QPainter, QColor, QPainterPath, QLinearGradient, QBrush, QPen, QPolygonF
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtProperty, QPropertyAnimation, QEasingCurve
 import threading
 import subprocess
@@ -9,7 +9,7 @@ import time
 class VisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.num_points = 120 
+        self.num_points = 80 # Reduced from 120 for performance
         self.heights = np.zeros(self.num_points)
         self.target_heights = np.zeros(self.num_points)
         
@@ -21,45 +21,70 @@ class VisualizerWidget(QWidget):
         self.color_bg = QColor("#1a1b26")
         self.enabled = True
         self.vis_type = "fluid-wave"
-        self.vignette_intensity = 0 # 0-100
+        self.vignette_intensity = 0 
         
         self.idle_phase = 0.0
-        self._opacity = 1.0 # Background & Overall opacity
-        self._waves_opacity = 1.0 # Only the moving waves
+        self._opacity = 1.0 
+        self._waves_opacity = 1.0 
+        
+        # Performance Cache
+        self._cached_bg_brush = QBrush(self.color_bg)
+        self._cached_grad = None
+        self._cached_pens = {}
+        self._last_w, self._last_h = 0, 0
+        
+        # FPS Control
+        self.fps_timer = QTimer(self)
+        self.fps_timer.timeout.connect(self._on_tick)
+        self.fps_timer.start(16) # ~60 FPS
         
         self.start_audio_capture()
 
     def set_colors(self, primary: str, secondary: str):
         self.color_primary = QColor(primary)
         self.color_secondary = QColor(secondary)
+        self._cached_grad = None # Force rebuild
         
     def set_bg_color(self, bg_hex: str):
         self.color_bg = QColor(bg_hex)
+        self._cached_bg_brush = QBrush(self.color_bg)
 
     @pyqtProperty(float)
-    def opacity(self):
-        return self._opacity
-
+    def opacity(self): return self._opacity
     @opacity.setter
     def opacity(self, val):
         self._opacity = val
-        self.update()
+        # No immediate update() - wait for tick
 
     @pyqtProperty(float)
     def waves_opacity(self): return self._waves_opacity
     @waves_opacity.setter
     def waves_opacity(self, val):
         self._waves_opacity = val
-        self.update()
 
     def set_enabled(self, val: bool):
         self.enabled = val
+        self.update()
 
     def set_type(self, vtype: str):
         self.vis_type = vtype
+        self.update()
 
     def set_vignette(self, val: int):
         self.vignette_intensity = val
+        self.update()
+
+    def _on_tick(self):
+        """Standardized update interval for smooth motion."""
+        if not self.enabled or self._opacity < 0.01:
+            return
+            
+        # Physics / Smoothing
+        self.heights += (self.target_heights - self.heights) * 0.15
+        self.idle_phase += 0.02
+        
+        if self.isVisible():
+            self.update()
 
     def start_audio_capture(self):
         if self.running: return
@@ -74,11 +99,9 @@ class VisualizerWidget(QWidget):
 
     def _audio_capture_loop(self):
         CHUNK = 512
-        cmd = ["parec", "--format=float32le", "--rate=44100", "--channels=1", "--latency-msec=10", "--monitor-stream"]
         cmd2 = ["parec", "--format=float32le", "--rate=44100", "--channels=1", "--latency-msec=10", "-d", "@DEFAULT_SINK@.monitor"]
         
         process = None
-        
         while self.running:
             try:
                 process = subprocess.Popen(cmd2, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -86,8 +109,7 @@ class VisualizerWidget(QWidget):
                 
                 while self.running and process.poll() is None:
                     data = process.stdout.read(CHUNK * 4) 
-                    if not data:
-                        break
+                    if not data: break
                         
                     if not self.enabled:
                         time.sleep(0.1)
@@ -111,7 +133,6 @@ class VisualizerWidget(QWidget):
                         
                     y[np.isinf(y)] = 0
                     y = np.clip(y, 0, max_val)
-                    
                     if np.max(y) > 0 and np.max(y) < max_val * 0.5:
                          y = y * 1.5
                          
@@ -122,89 +143,65 @@ class VisualizerWidget(QWidget):
                     target = np.zeros(self.num_points)
                     target[:half] = scaled[::-1]
                     target[half:] = scaled
-                    
                     self.target_heights = target
-                    # Trigger update from UI thread only if visible
-                    if self.isVisible() and self._opacity > 0.05:
-                        QTimer.singleShot(0, self.update)
                     
-            except Exception:
-                pass
-            
-            if process:
-                process.kill()
-            if self.running:
-                time.sleep(2.0)
+            except: pass
+            if process: process.kill()
+            if self.running: time.sleep(1.0)
                 
-        if process:
-            process.kill()
+        if process: process.kill()
 
     def paintEvent(self, event):
         if self._opacity <= 0.001: return
         
-        painter = QPainter()
-        if not painter.begin(self):
-            return
-            
+        painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         
-        w = self.width()
-        h = self.height()
+        w, h = self.width(), self.height()
+        if w != self._last_w or h != self._last_h:
+            self._cached_grad = None # Signal resize
+            self._last_w, self._last_h = w, h
         
-        # Draw background with main opacity
+        # BG
         painter.setOpacity(self._opacity)
-        painter.fillRect(0, 0, w, h, self.color_bg)
+        painter.fillRect(0, 0, w, h, self._cached_bg_brush)
         
-        # Draw waves with waves_opacity
-        painter.setOpacity(self._waves_opacity * self._opacity)
+        # Waves Opacity
+        final_waves_opacity = self._waves_opacity * self._opacity
+        painter.setOpacity(final_waves_opacity)
         
-        # Premium Vignette
+        # Vignette (Only rebuild if needed)
         if self.vignette_intensity > 0:
-            # Much more aggressive alpha scaling
-            vig_alpha = int(self.vignette_intensity * 2.2) 
-            vignette = QLinearGradient(0, 0, 0, h)
-            vignette.setColorAt(0, QColor(0,0,0, int(vig_alpha * 0.7)))
-            vignette.setColorAt(0.3, QColor(0,0,0,0))
-            vignette.setColorAt(0.7, QColor(0,0,0,0))
-            vignette.setColorAt(1, QColor(0,0,0, vig_alpha))
-            painter.fillRect(0, 0, w, h, vignette)
-            
-            side_alpha = int(vig_alpha * 0.8)
-            side_vignette = QLinearGradient(0, 0, w, 0)
-            side_vignette.setColorAt(0, QColor(0,0,0, side_alpha))
-            side_vignette.setColorAt(0.2, QColor(0,0,0,0))
-            side_vignette.setColorAt(0.8, QColor(0,0,0,0))
-            side_vignette.setColorAt(1, QColor(0,0,0, side_alpha))
-            painter.fillRect(0, 0, w, h, side_vignette)
+            vig_alpha = int(self.vignette_intensity * 2.1)
+            vg = QLinearGradient(0, 0, 0, h)
+            vg.setColorAt(0, QColor(0,0,0, int(vig_alpha * 0.6)))
+            vg.setColorAt(0.3, QColor(0,0,0,0))
+            vg.setColorAt(0.7, QColor(0,0,0,0))
+            vg.setColorAt(1, QColor(0,0,0, vig_alpha))
+            painter.fillRect(0, 0, w, h, vg)
         
-        if not self.enabled: 
-            return
+        if not self.enabled: return
             
-        self.heights += (self.target_heights - self.heights) * 0.15
-        self.idle_phase += 0.02
-        
         combined = np.maximum(self.heights + (np.sin(np.linspace(0, np.pi * 3, self.num_points) + self.idle_phase) * 0.05), 0.0)
-        max_amp = h * 0.5
+        max_amp = h * 0.4 # Reduced from 0.5 to stay lower
+        base_h_val = h * 0.8 # Lowered base line
         
         if self.vis_type == "fluid-wave":
+            step = (w + 40) / (self.num_points - 1)
             for layer in range(3):
                 path = QPainterPath()
                 path.moveTo(-20, h + 20)
-                step = (w + 40) / (self.num_points - 1)
                 phase = self.idle_phase + (layer * 2.0)
                 amp = 1.0 - (layer * 0.2)
                 
-                c_heights = self.heights * amp
-                idle_wave = np.sin(np.linspace(0, np.pi * 3, self.num_points) + phase) * (0.05 + layer*0.02)
-                cmb = np.maximum(c_heights + idle_wave, 0.0)
+                cmb = np.maximum((self.heights * amp) + np.sin(np.linspace(0, np.pi * 3, self.num_points) + phase) * (0.05 + layer*0.02), 0.0)
                 
-                base_h = h * 0.7
-                pts = [(-20 + (i * step), base_h - (cmb[i] * max_amp)) for i in range(self.num_points)]
-                    
-                path.lineTo(pts[0][0], pts[0][1])
+                path.lineTo(-20, base_h_val - (cmb[0] * max_amp))
                 for i in range(self.num_points - 1):
-                    x1, y1 = pts[i]
-                    x2, y2 = pts[i+1]
+                    x1 = -20 + (i * step)
+                    y1 = base_h_val - (cmb[i] * max_amp)
+                    x2 = -20 + ((i+1) * step)
+                    y2 = base_h_val - (cmb[i+1] * max_amp)
                     cx = (x1 + x2) / 2
                     path.cubicTo(cx, y1, cx, y2, x2, y2)
                     
@@ -213,101 +210,96 @@ class VisualizerWidget(QWidget):
                 
                 grad = QLinearGradient(0, 0, 0, h)
                 c1 = QColor(self.color_primary)
-                c1.setAlpha([40, 25, 15][layer]) # Reduced from [80, 50, 30]
+                c1.setAlpha([45, 30, 20][layer])
                 grad.setColorAt(0, c1)
-                grad.setColorAt(1, QColor(0,0,0,0))
-                
-                painter.setBrush(QBrush(grad))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawPath(path)
+                grad.setColorAt(1, Qt.GlobalColor.transparent)
+                painter.fillPath(path, grad)
                 
         elif self.vis_type == "classic-bars":
-            painter.setPen(Qt.PenStyle.NoPen)
-            grad = QLinearGradient(0, 0, 0, h)
-            c1 = QColor(self.color_primary)
-            c1.setAlpha(60)
-            c2 = QColor(self.color_secondary)
-            c2.setAlpha(20)
-            grad.setColorAt(0, c1)
-            grad.setColorAt(1, c2)
-            painter.setBrush(QBrush(grad))
-            
             bar_w = w / self.num_points
+            gap = 2
+            painter.setOpacity(final_waves_opacity * 0.6) # Lower opacity for bars
             for i in range(self.num_points):
-                h_val = combined[i] * max_amp * 1.5
-                rect = QRectF(i * bar_w, h - h_val, bar_w - 1, h_val)
-                painter.fillRect(rect, grad)
+                h_val = combined[i] * max_amp * 1.8
+                rect = QRectF(i * bar_w + gap, h - h_val - 20, bar_w - gap*2, h_val)
+                
+                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                grad.setColorAt(0, self.color_primary)
+                grad.setColorAt(1, self.color_secondary)
+                painter.setBrush(grad)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(rect, 3, 3)
+                
+        elif self.vis_type == "neon-strings":
+            painter.setOpacity(final_waves_opacity * 0.5)
+            step = w / (self.num_points - 1)
+            base_y = h * 0.6
+            for layer in range(3):
+                path = QPainterPath()
+                phase = self.idle_phase + (layer * 1.5)
+                amp = 1.0 - (layer * 0.2)
+                cmb = (self.heights * amp) + np.sin(np.linspace(0, np.pi * 2, self.num_points) + phase) * 0.04
+                
+                pts = [QPointF(i*step, base_y - (cmb[i] * max_amp)) for i in range(self.num_points)]
+                path.moveTo(pts[0])
+                for i in range(len(pts)-1):
+                    cx = (pts[i].x() + pts[i+1].x()) / 2
+                    path.cubicTo(cx, pts[i].y(), cx, pts[i+1].y(), pts[i+1].x(), pts[i+1].y())
+                
+                pen = QPen(self.color_primary if layer % 2 == 0 else self.color_secondary, 2)
+                painter.setPen(pen)
+                painter.drawPath(path)
                 
         elif self.vis_type == "cyber-bars":
             bar_w = w / self.num_points
+            painter.setOpacity(final_waves_opacity * 0.5)
             for i in range(self.num_points):
-                h_val = combined[i] * max_amp * 1.5
-                x = (i * bar_w) + (bar_w/2)
-                c_sec = QColor(self.color_secondary)
-                c_sec.setAlpha(100)
-                painter.setPen(QPen(c_sec, 2))
-                painter.drawLine(int(x), int(h), int(x), int(h - h_val))
-                painter.setPen(Qt.PenStyle.NoPen)
-                c_prim = QColor(self.color_primary)
-                c_prim.setAlpha(150)
-                painter.setBrush(c_prim)
-                painter.drawEllipse(QPointF(x, h - h_val), 3, 3)
-                
-        elif self.vis_type == "radial-sunburst":
-            cx, cy = w/2, h/2
-            bass = np.mean(combined[:10])
-            base_r = min(w, h) * 0.15 + (bass * -60.0)
-            if base_r < 10: base_r = 10
-            
-            painter.translate(cx, cy)
-            
-            painter.setPen(Qt.PenStyle.NoPen)
-            c_bg = QColor(self.color_secondary)
-            c_bg.setAlpha(20) # Reduced from 40
-            painter.setBrush(c_bg)
-            painter.drawEllipse(QPointF(0,0), base_r, base_r)
-            
-            c_line = QColor(self.color_primary)
-            c_line.setAlpha(120)
-            painter.setPen(QPen(c_line, 2))
-            for i in range(self.num_points):
-                ang = (i / self.num_points) * 2 * np.pi
-                r_out = base_r + (combined[i] * max_amp * 0.8)
-                x1, y1 = np.cos(ang)*base_r, np.sin(ang)*base_r
-                x2, y2 = np.cos(ang)*r_out, np.sin(ang)*r_out
-                painter.drawLine(QPointF(x1,y1), QPointF(x2,y2))
-            painter.translate(-cx, -cy)
-
-        elif self.vis_type == "neon-strings":
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            from PyQt6.QtGui import QPolygonF
-            for layer in range(3):
-                pen = QPen(QColor(self.color_primary) if layer%2==0 else QColor(self.color_secondary))
-                pen.setWidth(2)
-                c = pen.color()
-                c.setAlpha(80 - (layer*20)) # Reduced from 150 - (layer*40)
-                pen.setColor(c)
-                painter.setPen(pen)
-                
-                base_y = h/2 + (layer*10 - 10)
-                step = w / (self.num_points - 1)
-                
-                pts = []
-                for i in range(self.num_points):
-                    x = i * step
-                    y = base_y - (combined[i] * max_amp * (1.0 - layer*0.15)) * (np.sin(self.idle_phase + i + layer))
-                    pts.append(QPointF(x, y))
-                painter.drawPolyline(QPolygonF(pts))
+                h_val = combined[i] * max_amp * 1.6
+                rect = QRectF(i * bar_w, h - h_val - 40, bar_w - 2, h_val)
+                # Bottom part
+                painter.fillRect(rect, self.color_secondary)
+                # Top accent
+                painter.fillRect(QRectF(i * bar_w, h - h_val - 44, bar_w - 2, 3), self.color_primary)
                 
         elif self.vis_type == "digital-dots":
-            step_w = w / self.num_points
-            dot_h = 8
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(self.color_primary))
-            for i in range(0, self.num_points, 2):
+            dot_size = 6
+            step = w / (self.num_points - 1)
+            painter.setOpacity(final_waves_opacity * 0.7)
+            for i in range(self.num_points):
                 h_val = combined[i] * max_amp * 1.5
-                num_dots = int(h_val / dot_h)
-                x = i * step_w
-                for d in range(0, num_dots, 2):
-                    y = h - (d * dot_h) - dot_h
-                    painter.drawRect(int(x), int(y), int(step_w*2 - 2), int(dot_h - 2))
+                center_y = h - h_val - 50
+                painter.setBrush(self.color_primary)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(i * step, center_y), dot_size/2, dot_size/2)
+                # Subtle vertical line connecting
+                painter.setOpacity(final_waves_opacity * 0.2)
+                painter.fillRect(QRectF(i * step - 0.5, center_y + 10, 1, h - center_y), self.color_secondary)
+                painter.setOpacity(final_waves_opacity * 0.7)
+                
+        elif self.vis_type == "radial-sunburst":
+            painter.setOpacity(final_waves_opacity * 0.35)
+            center = QPointF(w/2, h/2)
+            inner_radius = 60
+            outer_base = 120
+            
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            for i in range(self.num_points):
+                angle = (i / self.num_points) * 360
+                # Wave effect: use heights
+                val = self.heights[i]
+                length = outer_base + (val * 120)
+                
+                rad = np.radians(angle - 90) # Start from top
+                start_p = center + QPointF(np.cos(rad) * inner_radius, np.sin(rad) * inner_radius)
+                end_p = center + QPointF(np.cos(rad) * length, np.sin(rad) * length)
+                
+                pen = QPen(self.color_primary if i % 2 == 0 else self.color_secondary, 2)
+                painter.setPen(pen)
+                painter.drawLine(start_p, end_p)
+                
+                # Add a "tip" dot for premium look
+                if val > 0.1:
+                    painter.setBrush(self.color_primary)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawEllipse(end_p, 2, 2)
+

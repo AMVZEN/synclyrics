@@ -383,3 +383,13 @@ class MainWindow(QMainWindow):
                 
         anim.finished.connect(on_finished)
         return anim
+    def closeEvent(self, event):
+        """Clean up all threads and resources to prevent hanging or crashes on exit."""
+        if self.player_monitor:
+            self.player_monitor.stop()
+        if self.fetcher_thread and self.fetcher_thread.isRunning():
+            self.fetcher_thread.terminate()
+            self.fetcher_thread.wait()
+        if self.central_bg:
+            self.central_bg.stop_audio_capture()
+        super().closeEvent(event)

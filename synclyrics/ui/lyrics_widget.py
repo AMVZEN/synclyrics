@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QLabel, QFrame
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, pyqtProperty, QEasingCurve
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QFont, QPalette
 from typing import List
 import math
 import time
@@ -90,51 +90,56 @@ class AnimatedScrollArea(QScrollArea):
 class LyricLabel(QLabel):
     def __init__(self, text="", parent=None, font_size=18, color_active="#ffffff", color_inactive="#666666"):
         super().__init__(text, parent)
-        self._active_factor = 0.0 # 0.0 (muted) -> 1.0 (active)
+        self._active_factor = 0.0 
         self.base_font_size = font_size
         self.color_active = QColor(color_active)
         self.color_inactive = QColor(color_inactive)
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         
+        # Cache font and palette
+        self._cached_font = QFont()
+        self._cached_font.setFamily("JetBrainsMono NF")
+        self._cached_font.setStyleHint(QFont.StyleHint.Monospace)
+        self._cached_font.setPointSizeF(font_size)
+        self._cached_font.setWeight(QFont.Weight.Medium)
+        self.setFont(self._cached_font)
+        
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, self.color_inactive)
+        self.setPalette(pal)
+        
         self.anim = QPropertyAnimation(self, b"activeFactor")
         self.anim.setDuration(250)
         self.anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     @pyqtProperty(float)
-    def activeFactor(self):
-        return self._active_factor
+    def activeFactor(self): return self._active_factor
 
     @activeFactor.setter
     def activeFactor(self, val):
+        if abs(self._active_factor - val) < 0.005: return
         self._active_factor = val
-        self._apply_style()
-
-    def _apply_style(self):
-        # Interpolate font size
-        size = self.base_font_size + (4 * self._active_factor)
         
-        # Interpolate color
-        r = int(self.color_inactive.red() + (self.color_active.red() - self.color_inactive.red()) * self._active_factor)
-        g = int(self.color_inactive.green() + (self.color_active.green() - self.color_inactive.green()) * self._active_factor)
-        b = int(self.color_inactive.blue() + (self.color_active.blue() - self.color_inactive.blue()) * self._active_factor)
+        # Color
+        r = int(self.color_inactive.red() + (self.color_active.red() - self.color_inactive.red()) * val)
+        g = int(self.color_inactive.green() + (self.color_active.green() - self.color_inactive.green()) * val)
+        b = int(self.color_inactive.blue() + (self.color_active.blue() - self.color_inactive.blue()) * val)
         
-        # Interpolate weight
-        weight = 500 + int(300 * self._active_factor)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.WindowText, QColor(r, g, b))
+        self.setPalette(pal)
         
-        self.setStyleSheet(f"""
-            color: rgb({r}, {g}, {b});
-            font-size: {size}px;
-            font-family: "JetBrainsMono NF", "FiraCode Nerd Font", monospace;
-            font-weight: {weight};
-            background: transparent;
-            padding: 8px 14px;
-        """)
+        # Font (only if significant)
+        if val > 0.8 or val < 0.2:
+            self._cached_font.setPointSizeF(self.base_font_size + (4 * val))
+            self._cached_font.setWeight(QFont.Weight.Medium if val < 0.5 else QFont.Weight.Bold)
+            self.setFont(self._cached_font)
 
     def update_colors(self, active, inactive):
         self.color_active = QColor(active)
         self.color_inactive = QColor(inactive)
-        self._apply_style()
+        self.activeFactor = self._active_factor # Force update
 
     def set_active(self, active: bool):
         target = 1.0 if active else 0.0
@@ -313,7 +318,7 @@ class LyricsWidget(QWidget):
             lbl.setWordWrap(True)
             
             # Left padding for non-active lines (space for left border when active)
-            lbl.setStyleSheet(f"color: {self.color_inactive}; font-size: {self.font_size}px; font-family: monospace; padding-left: 10px; background: transparent;")
+            lbl.setStyleSheet("background: transparent; padding: 10px 18px;")
             
             if rom_text:
                 html = f"<div>{main_text}</div><div style='font-size: {self.font_size-4}px; opacity: 0.5;'>↳ {rom_text}</div>"

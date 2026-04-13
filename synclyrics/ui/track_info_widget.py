@@ -1,4 +1,5 @@
 import requests
+import threading
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSlider, QFrame
 from PyQt6.QtGui import QColor, QFont, QPixmap, QImage, QPainter, QPainterPath
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, pyqtProperty
@@ -12,7 +13,11 @@ class TrackInfoWidget(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(0)
         self._opacity = 1.0
+        self._last_sec = -1
         self._setup_ui()
+        self.track_length = 0.0
+        self.current_offset = 0.0
+        self.is_scrubbing = False
 
     @pyqtProperty(float)
     def opacity(self): return self._opacity
@@ -25,14 +30,12 @@ class TrackInfoWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(15, 10, 15, 10)
         
-        # Transparent overlay container
         self.frame = QFrame()
         self.frame.setStyleSheet("background-color: transparent;")
         frame_layout = QHBoxLayout(self.frame)
         frame_layout.setContentsMargins(5, 5, 5, 5)
         frame_layout.setSpacing(18)
         
-        # Album Art
         self.art_label = QLabel()
         self.art_label.setFixedSize(64, 64)
         self.art_label.setStyleSheet("background-color: rgba(255,255,255,0.03); border-radius: 8px;")
@@ -43,45 +46,38 @@ class TrackInfoWidget(QWidget):
         info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         
         self.title_label = QLabel("No track playing")
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px; font-family: 'JetBrainsMono NF', 'FiraCode Nerd Font', monospace;")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px;")
         info_layout.addWidget(self.title_label)
         
         self.artist_label = QLabel("Waiting for MPRIS sync...")
-        self.artist_label.setStyleSheet("font-size: 14px; font-family: 'JetBrainsMono NF', 'FiraCode Nerd Font', monospace; opacity: 0.7;")
+        self.artist_label.setStyleSheet("font-size: 14px; opacity: 0.7;")
         info_layout.addWidget(self.artist_label)
         
         frame_layout.addLayout(info_layout)
         frame_layout.addStretch()
         
-        # Play/Pause button
-        self.play_pause_btn = QPushButton("󰐊") # Nerd Font Play
+        self.play_pause_btn = QPushButton("󰐊") 
         self.play_pause_btn.setFixedSize(48, 48)
         self.play_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_pause_btn.clicked.connect(self._toggle_playback)
         frame_layout.addWidget(self.play_pause_btn)
         
-        # Controls (Sync, Offset)
         self.controls_layout = QHBoxLayout()
         self.controls_layout.setSpacing(10)
         
-        self.btn_sync = QPushButton("󰑐") # Sync icon
-        self.btn_sync.setToolTip("Refresh Lyrics (Sync)")
+        self.btn_sync = QPushButton("󰑐")
         self.btn_sync.setFixedSize(32, 48)
-        self.btn_sync.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_sync.clicked.connect(self.sync_requested.emit)
         
         self.btn_offset_minus = QPushButton("-")
-        self.btn_offset_minus.setToolTip("Subtract 0.5s offset")
         self.btn_offset_minus.setFixedSize(24, 48)
         self.btn_offset_minus.clicked.connect(lambda: self._adjust_offset(-0.5))
         
         self.offset_label = QLabel("±0.0s")
         self.offset_label.setFixedWidth(50)
         self.offset_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.offset_label.setStyleSheet("font-family: monospace; font-size: 11px;")
         
         self.btn_offset_plus = QPushButton("+")
-        self.btn_offset_plus.setToolTip("Add 0.5s offset")
         self.btn_offset_plus.setFixedSize(24, 48)
         self.btn_offset_plus.clicked.connect(lambda: self._adjust_offset(0.5))
         
@@ -89,34 +85,26 @@ class TrackInfoWidget(QWidget):
         self.controls_layout.addWidget(self.btn_offset_minus)
         self.controls_layout.addWidget(self.offset_label)
         self.controls_layout.addWidget(self.btn_offset_plus)
-        
         frame_layout.addLayout(self.controls_layout)
         
         main_layout.addWidget(self.frame)
         
         prog_layout = QHBoxLayout()
-        prog_layout.setContentsMargins(5, 15, 5, 0)
+        prog_layout.setContentsMargins(5, 10, 5, 0)
         
         self.time_lbl_curr = QLabel("0:00")
-        self.time_lbl_curr.setStyleSheet("font-size: 11px; font-family: 'JetBrainsMono NF', 'FiraCode Nerd Font', monospace; font-weight: bold; padding-right: 8px;")
         prog_layout.addWidget(self.time_lbl_curr)
         
         self.progress_slider = QSlider(Qt.Orientation.Horizontal)
         self.progress_slider.setRange(0, 1000)
-        self.progress_slider.setCursor(Qt.CursorShape.PointingHandCursor)
         self.progress_slider.sliderPressed.connect(self._on_slider_pressed)
         self.progress_slider.sliderReleased.connect(self._on_slider_released)
         prog_layout.addWidget(self.progress_slider)
         
         self.time_lbl_total = QLabel("0:00")
-        self.time_lbl_total.setStyleSheet("font-size: 11px; font-family: 'JetBrainsMono NF', 'FiraCode Nerd Font', monospace; font-weight: bold; padding-left: 8px;")
         prog_layout.addWidget(self.time_lbl_total)
         
         main_layout.addLayout(prog_layout)
-        
-        self.track_length = 0.0
-        self.current_offset = 0.0
-        self.is_scrubbing = False
 
     def update_track(self, info: dict):
         if not info:
@@ -133,10 +121,6 @@ class TrackInfoWidget(QWidget):
         self.title_label.setText(title if len(title) < 40 else title[:37] + "...")
         self.artist_label.setText(info.get("artist", "Unknown Artist"))
         
-        if not self.is_scrubbing:
-            self.progress_slider.setValue(0)
-            self.time_lbl_curr.setText("0:00")
-        
         self.track_length = float(info.get("length", 0.0))
         if self.track_length > 0:
             m, s = divmod(int(self.track_length), 60)
@@ -144,23 +128,77 @@ class TrackInfoWidget(QWidget):
             
         art_url = info.get("artUrl", "")
         if art_url:
-            self._load_art(art_url)
+            threading.Thread(target=self._load_art_async, args=(art_url,), daemon=True).start()
             
     def update_position(self, pos: float):
         if self.track_length > 0 and not self.is_scrubbing:
-            m, s = divmod(int(pos), 60)
-            self.time_lbl_curr.setText(f"{m}:{s:02d}")
+            curr_sec = int(pos)
+            if curr_sec != self._last_sec:
+                m, s = divmod(curr_sec, 60)
+                self.time_lbl_curr.setText(f"{m}:{s:02d}")
+                self._last_sec = curr_sec
+                
             ratio = min(1.0, max(0.0, pos / self.track_length))
-            
             self.progress_slider.blockSignals(True)
             self.progress_slider.setValue(int(ratio * 1000))
             self.progress_slider.blockSignals(False)
 
     def set_state(self, state: str):
-        if state == "Playing":
-            self.play_pause_btn.setText("󰏤") # Nerd Font Pause
-        else:
-            self.play_pause_btn.setText("󰐊") # Nerd Font Play
+        self.play_pause_btn.setText("󰏤" if state == "Playing" else "󰐊")
+
+    def _load_art_async(self, url: str):
+        try:
+            if url.startswith("file://"):
+                img = QImage(url[7:])
+            elif url.startswith("http"):
+                r = requests.get(url, timeout=2)
+                img = QImage()
+                img.loadFromData(r.content)
+            else:
+                img = QImage(url)
+            
+            if not img.isNull():
+                img_copy = img.copy()
+                QTimer.singleShot(0, lambda: self._set_pixmap(QPixmap.fromImage(img_copy)))
+                return
+            
+            # If local file fails, maybe it's too fast? Retry once after 200ms
+            if url.startswith("file://"):
+                import time
+                time.sleep(0.2)
+                img = QImage(url[7:])
+                if not img.isNull():
+                    img_copy = img.copy()
+                    QTimer.singleShot(0, lambda: self._set_pixmap(QPixmap.fromImage(img_copy)))
+                    return
+        except Exception as e:
+            pass
+
+    def _set_pixmap(self, p: QPixmap):
+        scaled = p.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        res = QPixmap(64,64)
+        res.fill(Qt.GlobalColor.transparent)
+        pt = QPainter(res)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, 64, 64, 8, 8)
+        pt.setClipPath(path)
+        pt.drawPixmap((64-scaled.width())//2, (64-scaled.height())//2, scaled)
+        pt.end()
+        self.art_label.setPixmap(res)
+
+    def _on_slider_pressed(self): self.is_scrubbing = True
+    def _on_slider_released(self):
+        if self.track_length > 0:
+            new_pos = (self.progress_slider.value() / 1000.0) * self.track_length
+            subprocess.run(["playerctl", "position", str(new_pos)], stderr=subprocess.DEVNULL)
+        self.is_scrubbing = False
+
+    def _toggle_playback(self): subprocess.run(["playerctl", "play-pause"], stderr=subprocess.DEVNULL)
+    def _adjust_offset(self, delta: float):
+        self.current_offset += delta
+        self.offset_label.setText(f"{'+' if self.current_offset > 0 else ''}{self.current_offset:.1f}s")
+        self.offset_changed.emit(self.current_offset)
 
     def set_theme(self, primary_hex: str, secondary_hex: str):
         self.play_pause_btn.setStyleSheet(f"""
@@ -205,55 +243,6 @@ class TrackInfoWidget(QWidget):
         self.btn_offset_plus.setStyleSheet(btn_style)
         self.offset_label.setStyleSheet(f"color: {secondary_hex}; font-family: monospace; font-size: 11px;")
 
-    def _on_slider_pressed(self):
-        self.is_scrubbing = True
-
-    def _on_slider_released(self):
-        if self.track_length > 0:
-            ratio = self.progress_slider.value() / 1000.0
-            new_pos = ratio * self.track_length
-            try:
-                subprocess.run(["playerctl", "position", str(new_pos)])
-            except: pass
-        self.is_scrubbing = False
-
-    def _load_art(self, url: str):
-        if url.startswith("file://"):
-            p = QPixmap(url[7:])
-            self._set_pixmap(p)
-        elif url.startswith("http"):
-            try:
-                r = requests.get(url, timeout=2)
-                i = QImage()
-                i.loadFromData(r.content)
-                self._set_pixmap(QPixmap.fromImage(i))
-            except: pass
-
-    def _set_pixmap(self, pixmap: QPixmap):
-        if not pixmap.isNull():
-            scaled = pixmap.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
-            rounded = QPixmap(64, 64)
-            rounded.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(rounded)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            path = QPainterPath()
-            path.addRoundedRect(0, 0, 64, 64, 8, 8)
-            painter.setClipPath(path)
-            x = (64 - scaled.width()) // 2
-            y = (64 - scaled.height()) // 2
-            painter.drawPixmap(x, y, scaled)
-            painter.end()
-            self.art_label.setPixmap(rounded)
-
-    def _toggle_playback(self):
-        try: subprocess.run(["playerctl", "play-pause"])
-        except: pass
-
-    def _adjust_offset(self, delta: float):
-        self.current_offset += delta
-        self.offset_label.setText(f"{'+' if self.current_offset > 0 else ''}{self.current_offset:.1f}s")
-        self.offset_changed.emit(self.current_offset)
-        
     def reset_offset(self):
         self.current_offset = 0.0
         self.offset_label.setText("±0.0s")
