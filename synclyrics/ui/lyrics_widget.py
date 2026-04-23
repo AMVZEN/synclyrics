@@ -97,9 +97,9 @@ class LyricLabel(QLabel):
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         
-        # Cache font and palette
+        # Cache font and palette — use full name with fallback chain
         self._cached_font = QFont()
-        self._cached_font.setFamily("JetBrainsMono NF")
+        self._cached_font.setFamilies(["JetBrainsMono Nerd Font", "JetBrainsMono NF", "Fira Code", "Cascadia Code"])
         self._cached_font.setStyleHint(QFont.StyleHint.Monospace)
         self._cached_font.setPointSizeF(font_size)
         self._cached_font.setWeight(QFont.Weight.Medium)
@@ -361,7 +361,10 @@ class LyricsWidget(QWidget):
         self.content_layout.addSpacing(120)
 
     def update_position(self, pos_sec: float):
-        pos_sec += self.lyric_offset
+        # We add 1.5s as a base 'sync nudge' to compensate for 
+        # typical MPRIS/provider latency. This makes '0' in settings
+        # feel like the baseline for most users.
+        pos_sec += self.lyric_offset + 1.5
         if not self.rendered_lines: return
         
         # Binary search: O(log N) - using cached timestamps

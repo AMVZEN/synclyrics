@@ -7,12 +7,16 @@ unidecode
 pyaudio
 pykakasi
 pypinyin
+PyQt6-WebEngine>=6.5
 
 [chinese]
 pypinyin
 
 [japanese]
 pykakasi
+
+[milkdrop]
+PyQt6-WebEngine>=6.5
 
 [visualizer]
 pyaudio

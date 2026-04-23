@@ -2,12 +2,18 @@ import requests
 import threading
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QSlider, QFrame
 from PyQt6.QtGui import QColor, QFont, QPixmap, QImage, QPainter, QPainterPath
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, pyqtProperty
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, pyqtProperty, QByteArray
 import subprocess
+import os
+import urllib.parse
+
+# Font fallback chain — use full names that Qt actually resolves
+_FONT_FAMILY = "'JetBrainsMono Nerd Font', 'JetBrainsMono NF', 'Fira Code', 'Cascadia Code', monospace"
 
 class TrackInfoWidget(QWidget):
     sync_requested = pyqtSignal()
     offset_changed = pyqtSignal(float)
+    _art_loaded = pyqtSignal(QByteArray)  # raw image bytes, marshalled to main thread
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -18,6 +24,7 @@ class TrackInfoWidget(QWidget):
         self.track_length = 0.0
         self.current_offset = 0.0
         self.is_scrubbing = False
+        self._art_loaded.connect(self._on_art_bytes_received)
 
     @pyqtProperty(float)
     def opacity(self): return self._opacity
@@ -147,32 +154,44 @@ class TrackInfoWidget(QWidget):
         self.play_pause_btn.setText("󰏤" if state == "Playing" else "󰐊")
 
     def _load_art_async(self, url: str):
+        """Runs in a background thread — loads raw bytes then signals the main thread."""
         try:
+            raw_bytes = None
             if url.startswith("file://"):
-                img = QImage(url[7:])
+                path = urllib.parse.unquote(url[7:])
+                if os.path.exists(path):
+                    with open(path, "rb") as f:
+                        raw_bytes = f.read()
+                # Some players local paths are just paths
+            elif url.startswith("/"):
+                if os.path.exists(url):
+                    with open(url, "rb") as f:
+                        raw_bytes = f.read()
             elif url.startswith("http"):
-                r = requests.get(url, timeout=2)
-                img = QImage()
-                img.loadFromData(r.content)
+                r = requests.get(url, timeout=3)
+                if r.status_code == 200:
+                    raw_bytes = r.content
             else:
-                img = QImage(url)
-            
-            if not img.isNull():
-                img_copy = img.copy()
-                QTimer.singleShot(0, lambda: self._set_pixmap(QPixmap.fromImage(img_copy)))
-                return
-            
-            # If local file fails, maybe it's too fast? Retry once after 200ms
-            if url.startswith("file://"):
-                import time
-                time.sleep(0.2)
-                img = QImage(url[7:])
-                if not img.isNull():
-                    img_copy = img.copy()
-                    QTimer.singleShot(0, lambda: self._set_pixmap(QPixmap.fromImage(img_copy)))
-                    return
-        except Exception as e:
-            pass
+                # Last resort: try as relative or full path
+                if os.path.exists(url):
+                    with open(url, "rb") as f:
+                        raw_bytes = f.read()
+
+            if raw_bytes:
+                # Signal the main thread with the raw bytes (thread-safe)
+                self._art_loaded.emit(QByteArray(raw_bytes))
+            else:
+                # Clear art if load failed
+                self._art_loaded.emit(QByteArray())
+        except Exception:
+            self._art_loaded.emit(QByteArray())
+
+    def _on_art_bytes_received(self, data: QByteArray):
+        """Runs on main thread — safe to create QImage/QPixmap here."""
+        img = QImage()
+        img.loadFromData(data)
+        if not img.isNull():
+            self._set_pixmap(QPixmap.fromImage(img))
 
     def _set_pixmap(self, p: QPixmap):
         scaled = p.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
@@ -205,7 +224,7 @@ class TrackInfoWidget(QWidget):
             QPushButton {{
                 background-color: transparent; border: none;
                 color: {primary_hex}; font-size: 32px; padding-bottom: 4px;
-                font-family: 'JetBrainsMono NF', 'FiraCode Nerd Font', monospace;
+                font-family: {_FONT_FAMILY};
             }}
             QPushButton:hover {{ color: {secondary_hex}; font-size: 36px; }}
         """)
@@ -226,15 +245,15 @@ class TrackInfoWidget(QWidget):
             }}
         """)
         
-        self.title_label.setStyleSheet(f"color: {primary_hex}; font-weight: 800; font-size: 16px; font-family: 'JetBrainsMono NF', monospace;")
-        self.artist_label.setStyleSheet(f"color: {secondary_hex}; font-size: 14px; font-family: 'JetBrainsMono NF', monospace;")
+        self.title_label.setStyleSheet(f"color: {primary_hex}; font-weight: 800; font-size: 16px; font-family: {_FONT_FAMILY};")
+        self.artist_label.setStyleSheet(f"color: {secondary_hex}; font-size: 14px; font-family: {_FONT_FAMILY};")
         self.time_lbl_curr.setStyleSheet(f"color: {secondary_hex}; font-size: 11px;")
         self.time_lbl_total.setStyleSheet(f"color: {secondary_hex}; font-size: 11px;")
         
         btn_style = f"""
             QPushButton {{ 
                 background: transparent; border: none; color: {secondary_hex}; 
-                font-family: "JetBrainsMono NF", monospace; font-size: 14px;
+                font-family: {_FONT_FAMILY}; font-size: 14px;
             }}
             QPushButton:hover {{ color: {primary_hex}; }}
         """
@@ -247,3 +266,9 @@ class TrackInfoWidget(QWidget):
         self.current_offset = 0.0
         self.offset_label.setText("±0.0s")
         self.offset_changed.emit(0.0)
+
+    def set_offset_value(self, value: float):
+        """Set offset to a specific value (e.g. the default 1.5s)."""
+        self.current_offset = value
+        self.offset_label.setText(f"{'+' if value > 0 else ''}{value:.1f}s")
+        self.offset_changed.emit(value)

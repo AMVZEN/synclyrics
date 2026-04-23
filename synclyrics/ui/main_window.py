@@ -12,6 +12,14 @@ from synclyrics.ui.theme import ThemeManager
 from synclyrics.player.monitor import PlayerMonitor
 from synclyrics.lyrics.fetcher import LyricsFetcher, FetchRequest
 from synclyrics.lyrics.romanizer import Romanizer
+import subprocess
+
+# Optional milkdrop import
+try:
+    from synclyrics.ui.milkdrop_widget import MilkdropWidget, HAS_WEBENGINE
+except ImportError:
+    HAS_WEBENGINE = False
+    MilkdropWidget = None
 
 class ModernTitleBar(QWidget):
     def __init__(self, parent=None):
@@ -39,9 +47,9 @@ class ModernTitleBar(QWidget):
         
         layout.addStretch()
         
-        self.btn_settings = QPushButton("☰") # Hamburger menu
-        self.btn_minimize = QPushButton("—") # Minimize
-        self.btn_close = QPushButton("✕") # Close
+        self.btn_settings = QPushButton("☰")
+        self.btn_minimize = QPushButton("—")
+        self.btn_close = QPushButton("✕")
         
         for btn in (self.btn_settings, self.btn_minimize, self.btn_close):
             btn.setFixedSize(24, 24)
@@ -74,6 +82,8 @@ class ModernTitleBar(QWidget):
         self.start_pos = None
 
 class MainWindow(QMainWindow):
+    DEFAULT_OFFSET = 1.5
+
     def __init__(self):
         super().__init__()
         
@@ -83,20 +93,30 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(550, 800)
         
-        # Make the VisualizerWidget the base central widget
-        # so it paints beneath everything else
-        # Base container for Layering
+        self._all_lyrics_results = []
+        self._current_result_idx = 0
+        self._track_lyric_memory = {}
+        self._milkdrop_preset_names = []
+        
+        # Base container
         self.base_container = QWidget()
         self.setCentralWidget(self.base_container)
         
-        # Grid layout allows overlapping siblings
         self.layout_root = QGridLayout(self.base_container)
         self.layout_root.setContentsMargins(0, 0, 0, 0)
         self.layout_root.setSpacing(0)
         
-        # Layer 0: Background Visualizer (Siblings with Content)
+        # Layer 0: Background Visualizer (native)
         self.central_bg = VisualizerWidget(self)
         self.layout_root.addWidget(self.central_bg, 0, 0)
+        
+        # Layer 0.5: Milkdrop Visualizer (WebEngine overlay)
+        self.milkdrop = None
+        if HAS_WEBENGINE and MilkdropWidget:
+            self.milkdrop = MilkdropWidget(self)
+            self.milkdrop.presets_loaded.connect(self._on_milkdrop_presets_loaded)
+            self.layout_root.addWidget(self.milkdrop, 0, 0)
+            self.milkdrop.hide()
         
         # Layer 1: Foreground Content
         self.content_widget = QWidget()
@@ -106,7 +126,6 @@ class MainWindow(QMainWindow):
         self.content_layout.setSpacing(0)
         self.layout_root.addWidget(self.content_widget, 0, 0)
         
-        # Add components to the foreground
         self.title_bar = ModernTitleBar(self)
         self.content_layout.addWidget(self.title_bar)
         
@@ -127,7 +146,7 @@ class MainWindow(QMainWindow):
         self.track_info.sync_requested.connect(self._manual_sync)
         self.track_info.offset_changed.connect(self.lyrics_widget.set_offset)
         
-        # UI State cycle button (Parent is the content widget to survive visualizer hide)
+        # UI State cycle (4 modes now)
         self.ui_state = 0 
         self.cycle_btn = QPushButton("󰒲", self.content_widget) 
         self.cycle_btn.setFixedSize(32, 32)
@@ -136,18 +155,35 @@ class MainWindow(QMainWindow):
         self.cycle_btn.clicked.connect(self._cycle_ui_state)
         self.cycle_btn.raise_()
         
+        # "Try other lyrics" button
+        self.alt_lyrics_btn = QPushButton("⟳ ALT", self.content_widget)
+        self.alt_lyrics_btn.setFixedSize(64, 28)
+        self.alt_lyrics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.alt_lyrics_btn.setToolTip("Cycle through alternative lyrics sources")
+        self.alt_lyrics_btn.clicked.connect(self._cycle_lyrics_source)
+        self.alt_lyrics_btn.raise_()
+        self.alt_lyrics_btn.hide()
+        
         self.fetcher_thread = None
         ThemeManager.get().register_callback(self._apply_theme)
         
         self._load_settings()
         self.player_monitor.start()
 
+    def _on_milkdrop_presets_loaded(self, names):
+        self._milkdrop_preset_names = names
+
+    def _is_milkdrop_active(self):
+        vis_type = self.qsettings.value("vis_type", "fluid-wave")
+        vis_enabled = self.qsettings.value("visualizer", True, type=bool)
+        return vis_type == "milkdrop" and vis_enabled and self.milkdrop is not None
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         rect = self.rect()
         self.grip.move(rect.right() - 16, rect.bottom() - 16)
-        # Position the cycle button relative to bottom right
         self.cycle_btn.move(rect.right() - 40, rect.bottom() - 40)
+        self.alt_lyrics_btn.move(12, rect.bottom() - 36)
 
     def _set_flags(self):
         flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
@@ -159,7 +195,7 @@ class MainWindow(QMainWindow):
         theme_name = self.qsettings.value("theme", "tokyo-night")
         if theme_name == "custom":
             ThemeManager.get().set_custom_color(
-                "#7aa2f7", # dummy base
+                "#7aa2f7",
                 text_main=self.qsettings.value("custom_text_color", "#ffffff"),
                 text_muted=self.qsettings.value("custom_text_muted", "#666666"),
                 primary=self.qsettings.value("custom_accent_color", "#7aa2f7"),
@@ -171,13 +207,44 @@ class MainWindow(QMainWindow):
             ThemeManager.get().set_preset(theme_name)
             
         self.lyrics_widget.set_alignment(self.qsettings.value("alignment", "Left"))
-        self.central_bg.set_enabled(self.qsettings.value("visualizer", True, type=bool))
-        self.central_bg.set_type(self.qsettings.value("vis_type", "fluid-wave"))
+        
+        vis_enabled = self.qsettings.value("visualizer", True, type=bool)
+        vis_type = self.qsettings.value("vis_type", "fluid-wave")
+        
+        # Handle milkdrop vs native visualizer switching
+        if vis_type == "milkdrop" and self.milkdrop:
+            self.central_bg.set_enabled(False)
+            self.milkdrop.show()
+            self.milkdrop.start_audio()
+            # Apply milkdrop settings
+            md_random = self.qsettings.value("md_random_cycle", True, type=bool)
+            md_interval = self.qsettings.value("md_cycle_interval", 15, type=int)
+            md_preset = self.qsettings.value("md_preset", "")
+            self.milkdrop.set_random_cycle(md_random, md_interval)
+            if md_preset and not md_random:
+                self.milkdrop.load_preset(md_preset)
+            # Blur when lyrics are visible (state 0 or 1)
+            self._update_milkdrop_blur()
+        else:
+            self.central_bg.set_enabled(vis_enabled)
+            self.central_bg.set_type(vis_type)
+            if self.milkdrop:
+                self.milkdrop.hide()
+                self.milkdrop.stop_audio()
+        
         self.central_bg.set_vignette(self.qsettings.value("vignette_intensity", 0, type=int))
         self.lyrics_widget.set_glow(self.qsettings.value("glow_intensity", 0, type=int))
 
+    def _update_milkdrop_blur(self):
+        """Set milkdrop blur based on whether lyrics are currently visible."""
+        if not self.milkdrop or not self._is_milkdrop_active():
+            return
+        # States where lyrics are visible: 0, 1, 3
+        # State 2: vis only → no blur
+        lyrics_visible = self.ui_state != 2
+        self.milkdrop.set_blur(lyrics_visible)
+
     def _apply_theme(self, theme):
-        # We handle border and inner transparency wrapper
         self.central_bg.setObjectName("CentralBG")
         sheet = f"""
             #CentralBG {{
@@ -200,6 +267,23 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{ background-color: {theme.surface_alt}; color: #ffffff; }}
         """)
+        
+        self.alt_lyrics_btn.setStyleSheet(f"""
+            QPushButton {{ 
+                background-color: rgba(0,0,0,0.4); 
+                border: 1px solid {theme.surface_alt}; 
+                border-radius: 6px; 
+                color: {theme.text_muted}; 
+                font-size: 10px;
+                font-family: 'JetBrainsMono NF', monospace;
+                font-weight: bold;
+                padding: 2px 6px;
+            }}
+            QPushButton:hover {{ 
+                background-color: {theme.surface_alt}; 
+                color: {theme.primary}; 
+            }}
+        """)
 
     def open_settings(self):
         from synclyrics.ui.settings_dialog import SettingsDialog
@@ -217,12 +301,22 @@ class MainWindow(QMainWindow):
             "visualizer": self.qsettings.value("visualizer", True, type=bool),
             "vis_type": self.qsettings.value("vis_type", "fluid-wave"),
             "vignette_intensity": self.qsettings.value("vignette_intensity", 0, type=int),
-            "glow_intensity": self.qsettings.value("glow_intensity", 0, type=int)
+            "glow_intensity": self.qsettings.value("glow_intensity", 0, type=int),
+            # Milkdrop
+            "md_random_cycle": self.qsettings.value("md_random_cycle", True, type=bool),
+            "md_cycle_interval": self.qsettings.value("md_cycle_interval", 15, type=int),
+            "md_preset": self.qsettings.value("md_preset", ""),
+            "md_presets_list": self._milkdrop_preset_names,
+            "default_offset": self.qsettings.value("default_offset", 0.0, type=float),
         }
         
         dlg = SettingsDialog(self, current)
         ThemeManager.get().register_callback(lambda t: self._color_dlg(dlg, t))
         self._color_dlg(dlg, ThemeManager.get().theme)
+        
+        # If milkdrop presets load while dialog is open, update it
+        if self.milkdrop:
+            self.milkdrop.presets_loaded.connect(dlg.update_milkdrop_presets)
         
         dlg.settings_changed.connect(self._save_settings)
         dlg.exec()
@@ -244,23 +338,26 @@ class MainWindow(QMainWindow):
         if not info:
              self.lyrics_widget.set_lyrics(None)
              self.track_info.reset_offset()
+             self._all_lyrics_results = []
+             self._current_result_idx = 0
+             self.alt_lyrics_btn.hide()
              return
              
-        self.track_info.reset_offset()
+        default_offset = self.qsettings.value("default_offset", 0, type=float)
+        self.track_info.set_offset_value(default_offset)
         self._fetch_lyrics(info)
 
     def _manual_sync(self):
-        # We use the last known track info from player monitor
         info = self.player_monitor.last_info
         if info:
             self._fetch_lyrics(info)
 
     def _fetch_lyrics(self, info: dict):
-        # Immediately wipe old lyrics and force positions to 0 so it doesn't look stuck
         from synclyrics.lyrics.parser import LyricsResult
         empty = LyricsResult(plain_text="[ Fetching latest lyrics... ]")
         self.lyrics_widget.set_lyrics(empty)
         self.lyrics_widget.update_position(0.0)
+        self.alt_lyrics_btn.hide()
         
         if self.fetcher_thread and self.fetcher_thread.isRunning():
             self.fetcher_thread.terminate()
@@ -281,8 +378,40 @@ class MainWindow(QMainWindow):
     def _on_lyrics_error(self, message):
         self.lyrics_widget.set_error(message)
 
-    def _on_lyrics_ready(self, result, req):
+    def _on_lyrics_ready(self, results_list, default_idx, req):
+        self._all_lyrics_results = results_list
+        
+        track_key = (req.artist.lower().strip(), req.title.lower().strip())
+        if track_key in self._track_lyric_memory:
+            preferred = self._track_lyric_memory[track_key]
+            if preferred < len(results_list):
+                default_idx = preferred
+        
+        self._current_result_idx = default_idx
+        self.lyrics_widget.set_lyrics(results_list[default_idx])
+        
+        if len(results_list) > 1:
+            self.alt_lyrics_btn.setText(f"⟳ 1/{len(results_list)}")
+            self.alt_lyrics_btn.show()
+        else:
+            self.alt_lyrics_btn.hide()
+
+    def _cycle_lyrics_source(self):
+        if len(self._all_lyrics_results) <= 1:
+            return
+        
+        self._current_result_idx = (self._current_result_idx + 1) % len(self._all_lyrics_results)
+        result = self._all_lyrics_results[self._current_result_idx]
         self.lyrics_widget.set_lyrics(result)
+        
+        total = len(self._all_lyrics_results)
+        self.alt_lyrics_btn.setText(f"⟳ {self._current_result_idx + 1}/{total}")
+        
+        info = self.player_monitor.last_info
+        if info:
+            track_key = (info.get("artist", "").lower().strip(), 
+                        info.get("title", "").lower().strip())
+            self._track_lyric_memory[track_key] = self._current_result_idx
 
     def _on_position_updated(self, pos: float):
         self.track_info.update_position(pos)
@@ -294,42 +423,47 @@ class MainWindow(QMainWindow):
             except: pass
         elif event.key() == Qt.Key.Key_Escape:
             if self.ui_state != 0:
-                self.ui_state = 3 # So next cycle is 0
+                self.ui_state = 3  # So next cycle is 0
                 self._cycle_ui_state()
         elif event.key() == Qt.Key.Key_R:
             self._manual_sync()
+        elif event.key() == Qt.Key.Key_N:
+            self._cycle_lyrics_source()
         else:
             super().keyPressEvent(event)
 
     def _cycle_ui_state(self):
-        # Stage 1: All elements
-        # Stage 2: Lyrics and Visualizer (No Title/Track)
-        # Stage 3: Lyrics only (No waves, Background stays)
-        self.ui_state = (self.ui_state + 1) % 3
+        num_states = 4 if self._is_milkdrop_active() else 3
+        self.ui_state = (self.ui_state + 1) % num_states
         
         from PyQt6.QtCore import QParallelAnimationGroup
         self.anim_group = QParallelAnimationGroup()
         
-        # Targets: [(TitleOpacity, TitleHeight), (TrackOpacity, TrackHeight), LyricsAlpha, BGAlpha, WavesAlpha]
-        states = [
-            [(1.0, 30),  (1.0, 120), 1.0, 1.0, 1.0], # 0: All
-            [(0.0, 0),   (0.0, 0),   1.0, 1.0, 1.0], # 1: Lyrics + Vis
-            [(0.0, 0),   (0.0, 0),   1.0, 1.0, 0.0]  # 2: Lyrics (BG Only)
-        ]
+        if self._is_milkdrop_active():
+            # 4-state cycle for milkdrop
+            states = [
+                # title,       track,        lyrics, vis, waves
+                [(1.0, 30),  (1.0, 120),    1.0,   1.0,  1.0],  # 0: All (blurred)
+                [(0.0, 0),   (0.0, 0),      1.0,   1.0,  1.0],  # 1: Lyrics+Vis (blurred)
+                [(0.0, 0),   (0.0, 0),      0.0,   1.0,  1.0],  # 2: Vis Only (clear!)
+                [(0.0, 0),   (0.0, 0),      1.0,   1.0,  0.0],  # 3: Lyrics Only
+            ]
+        else:
+            # Original 3-state cycle for native visualizers
+            states = [
+                [(1.0, 30),  (1.0, 120), 1.0, 1.0, 1.0],  # 0: All
+                [(0.0, 0),   (0.0, 0),   1.0, 1.0, 1.0],  # 1: Lyrics + Vis
+                [(0.0, 0),   (0.0, 0),   1.0, 1.0, 0.0],  # 2: Lyrics (BG Only)
+            ]
         
         t_title, t_track, o_lyrics, o_vis, o_waves = states[self.ui_state]
         
-        # Top bars animations
         self.anim_group.addAnimation(self._animate_widget_stealth(self.title_bar, t_title[0], t_title[1]))
         self.anim_group.addAnimation(self._animate_widget_stealth(self.track_info, t_track[0], t_track[1]))
         
-        # Lyrics fade
         self.anim_group.addAnimation(self._create_opacity_anim(self.lyrics_widget, o_lyrics))
-        
-        # Visualizer (BG and Waves separately)
         self.anim_group.addAnimation(self._create_opacity_anim(self.central_bg, o_vis))
         
-        # Animate waves intensity specifically
         waves_anim = QPropertyAnimation(self.central_bg, b"waves_opacity")
         waves_anim.setDuration(400)
         waves_anim.setStartValue(self.central_bg.waves_opacity)
@@ -337,10 +471,12 @@ class MainWindow(QMainWindow):
         waves_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self.anim_group.addAnimation(waves_anim)
         
+        # Milkdrop blur: blur when lyrics visible, clear when vis-only
+        self._update_milkdrop_blur()
+        
         self.anim_group.start()
 
     def _animate_widget_stealth(self, widget, target_opacity, normal_height):
-        # 1. Height animation
         target_height = normal_height if target_opacity > 0.5 else 0
         h_anim = QPropertyAnimation(widget, b"maximumHeight")
         h_anim.setDuration(400)
@@ -348,17 +484,14 @@ class MainWindow(QMainWindow):
         h_anim.setEndValue(target_height)
         h_anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         
-        # 2. Add opacity animation to group
         self.anim_group.addAnimation(self._create_opacity_anim(widget, target_opacity))
         return h_anim
 
     def _create_opacity_anim(self, widget, target):
-        # VisualizerWidget and SquiggleWidget have native 'opacity' properties
         if hasattr(widget, "opacity") and not isinstance(widget, QGraphicsOpacityEffect):
             anim = QPropertyAnimation(widget, b"opacity")
             anim.setStartValue(widget.opacity)
         else:
-            # For standard widgets, use the persistent GraphicsEffect
             eff = widget.graphicsEffect()
             if not eff or not isinstance(eff, QGraphicsOpacityEffect):
                 eff = QGraphicsOpacityEffect(widget)
@@ -370,21 +503,19 @@ class MainWindow(QMainWindow):
         anim.setEndValue(target)
         anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
         
-        # Immediate state management
         if target > 0.01:
             widget.show()
             if widget == self.lyrics_widget:
                 QTimer.singleShot(50, lambda: self.lyrics_widget.update_position(self.player_monitor.last_reported_pos))
         
-        # Cleanup connection
         def on_finished():
             if target < 0.01 and widget not in (self.central_bg, self.content_widget):
                 widget.hide()
                 
         anim.finished.connect(on_finished)
         return anim
+
     def closeEvent(self, event):
-        """Clean up all threads and resources to prevent hanging or crashes on exit."""
         if self.player_monitor:
             self.player_monitor.stop()
         if self.fetcher_thread and self.fetcher_thread.isRunning():
@@ -392,4 +523,6 @@ class MainWindow(QMainWindow):
             self.fetcher_thread.wait()
         if self.central_bg:
             self.central_bg.stop_audio_capture()
+        if self.milkdrop:
+            self.milkdrop.cleanup()
         super().closeEvent(event)

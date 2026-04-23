@@ -12,7 +12,6 @@ class SettingsDialog(QDialog):
         self.setFixedSize(540, 750)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.FramelessWindowHint)
         
-        # We use very high contrast for the dialog to avoid 'white-out' issues
         self.setStyleSheet("""
             QDialog { background-color: #0d0d0d; color: #ffffff; border: 2px solid #292929; border-radius: 12px; }
             QWidget { background-color: transparent; color: #ffffff; }
@@ -114,12 +113,90 @@ class SettingsDialog(QDialog):
         vis_type_layout.addWidget(QLabel("VISUALIZER STYLE:"))
         self.vis_type_cb = QComboBox()
         self.vis_type_cb.setFixedWidth(150)
-        self.vis_type_cb.addItems(["fluid-wave", "classic-bars", "cyber-bars", "radial-sunburst", "neon-strings", "digital-dots"])
+        self.vis_type_cb.addItems(["fluid-wave", "classic-bars", "cyber-bars", "radial-sunburst", 
+                                   "neon-strings", "digital-dots", "milkdrop"])
         self.vis_type_cb.setCurrentText(self.settings.get("vis_type", "fluid-wave"))
         vis_type_layout.addWidget(self.vis_type_cb)
         content_layout.addLayout(vis_type_layout)
         
+        # === MILKDROP SETTINGS (collapsible) ===
+        self.milkdrop_box = QFrame()
+        self.milkdrop_box.setStyleSheet("""
+            QFrame { 
+                background: rgba(122, 162, 247, 0.05); 
+                border: 1px solid rgba(122, 162, 247, 0.15); 
+                border-radius: 8px; 
+                padding: 4px;
+            }
+        """)
+        md_vbox = QVBoxLayout(self.milkdrop_box)
+        md_vbox.setContentsMargins(12, 10, 12, 10)
+        md_vbox.setSpacing(10)
+        
+        md_header = QLabel("⟡ MILKDROP CONFIG")
+        md_header.setStyleSheet("color: #bb9af7; font-size: 12px; font-family: monospace; font-weight: bold; border: none;")
+        md_vbox.addWidget(md_header)
+        
+        self.md_random_chk = QCheckBox("RANDOMIZE PRESETS (CYCLE)")
+        self.md_random_chk.setChecked(self.settings.get("md_random_cycle", True))
+        md_vbox.addWidget(self.md_random_chk)
+        
+        # Cycle interval
+        interval_row = QHBoxLayout()
+        interval_row.addWidget(QLabel("CYCLE INTERVAL:"))
+        self.md_interval_val = QLabel(f"{self.settings.get('md_cycle_interval', 15)}s")
+        interval_row.addStretch()
+        interval_row.addWidget(self.md_interval_val)
+        md_vbox.addLayout(interval_row)
+        
+        self.md_interval_slider = QSlider(Qt.Orientation.Horizontal)
+        self.md_interval_slider.setRange(5, 120)
+        self.md_interval_slider.setValue(self.settings.get("md_cycle_interval", 15))
+        self.md_interval_slider.valueChanged.connect(lambda v: self.md_interval_val.setText(f"{v}s"))
+        md_vbox.addWidget(self.md_interval_slider)
+        
+        # Preset selector
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("PRESET:"))
+        self.md_preset_cb = QComboBox()
+        self.md_preset_cb.setFixedWidth(280)
+        self.md_preset_cb.setEditable(True)
+        self.md_preset_cb.lineEdit().setPlaceholderText("type to search...")
+        
+        # Populate from stored preset list
+        preset_list = self.settings.get("md_presets_list", [])
+        if preset_list:
+            self.md_preset_cb.addItems(preset_list)
+        current_preset = self.settings.get("md_preset", "")
+        if current_preset:
+            self.md_preset_cb.setCurrentText(current_preset)
+        
+        preset_row.addWidget(self.md_preset_cb)
+        md_vbox.addLayout(preset_row)
+        
+        # Toggle interval slider based on random checkbox
+        self.md_random_chk.toggled.connect(lambda checked: self.md_interval_slider.setEnabled(checked))
+        self.md_interval_slider.setEnabled(self.md_random_chk.isChecked())
+        
+        content_layout.addWidget(self.milkdrop_box)
+        
+        # Show/hide milkdrop settings
+        self.vis_type_cb.currentTextChanged.connect(self._on_vis_type_changed)
+        self.milkdrop_box.setVisible(self.vis_type_cb.currentText() == "milkdrop")
+        
         # FX INTENSITY
+        # Offset
+        offset_layout = QHBoxLayout()
+        offset_layout.addWidget(QLabel("DEFAULT LYRIC OFFSET (s)"))
+        self.offset_slider = QSlider(Qt.Orientation.Horizontal)
+        self.offset_slider.setRange(-50, 50)  # -5.0 to 5.0
+        self.offset_slider.setValue(int(float(self.settings.get("default_offset", 0.0)) * 10))
+        offset_layout.addWidget(self.offset_slider)
+        self.offset_val_lbl = QLabel(f"{self.offset_slider.value()/10.0:+.1f}s")
+        self.offset_slider.valueChanged.connect(lambda v: self.offset_val_lbl.setText(f"{v/10.0:+.1f}s"))
+        offset_layout.addWidget(self.offset_val_lbl)
+        content_layout.addLayout(offset_layout)
+
         content_layout.addSpacing(10)
         self.vig_slider = self._add_slider_row(content_layout, "VIGNETTE INTENSITY (POWER)", "vignette_intensity")
         self.glow_slider = self._add_slider_row(content_layout, "GLOW INTENSITY (DREAMY)", "glow_intensity")
@@ -144,7 +221,18 @@ class SettingsDialog(QDialog):
         footer_layout.addWidget(cancel_btn)
         footer_layout.addWidget(save_btn)
         layout.addWidget(footer)
-        
+
+    def _on_vis_type_changed(self, vis_type):
+        self.milkdrop_box.setVisible(vis_type == "milkdrop")
+
+    def update_milkdrop_presets(self, preset_names):
+        """Called externally to populate the preset dropdown after async load."""
+        current = self.md_preset_cb.currentText()
+        self.md_preset_cb.clear()
+        self.md_preset_cb.addItems(preset_names)
+        if current:
+            self.md_preset_cb.setCurrentText(current)
+
     def _create_color_row(self, layout, label, key, default):
         row = QHBoxLayout()
         row.addWidget(QLabel(label))
@@ -202,7 +290,12 @@ class SettingsDialog(QDialog):
             "visualizer": self.visualizer_chk.isChecked(),
             "vis_type": self.vis_type_cb.currentText(),
             "vignette_intensity": self.vig_slider.value(),
-            "glow_intensity": self.glow_slider.value()
+            "glow_intensity": self.glow_slider.value(),
+            # Milkdrop settings
+            "md_random_cycle": self.md_random_chk.isChecked(),
+            "md_cycle_interval": self.md_interval_slider.value(),
+            "md_preset": self.md_preset_cb.currentText(),
+            "default_offset": self.offset_slider.value() / 10.0
         }
         self.settings_changed.emit(new_settings)
         self.accept()

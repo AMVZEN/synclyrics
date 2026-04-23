@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synclyrics"
-version = "1.0.0"
+version = "1.2.0"
 description = "A premium desktop lyrics player for Linux with karaoke mode and audio visualizer"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,12 +16,19 @@ dependencies = [
 
 [project.optional-dependencies]
 visualizer = ["pyaudio"]
+milkdrop = ["PyQt6-WebEngine>=6.5"]
 japanese = ["pykakasi"]
 chinese = ["pypinyin"]
-all = ["pyaudio", "pykakasi", "pypinyin"]
+all = ["pyaudio", "pykakasi", "pypinyin", "PyQt6-WebEngine>=6.5"]
 
 [project.scripts]
 synclyrics = "synclyrics.main:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["synclyrics*"]
+
+[tool.setuptools.package-data]
+"synclyrics.ui" = ["*.html"]

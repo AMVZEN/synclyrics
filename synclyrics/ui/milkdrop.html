@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+  body { transition: filter 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
+   body.blurred { filter: blur(10px) brightness(0.6) saturate(1.1); }
+  #canvas { width: 100vw; height: 100vh; display: block; }
+  #status {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    color: #555; font-family: monospace; font-size: 14px; z-index: 10;
+    pointer-events: none; transition: opacity 0.5s;
+  }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="status">loading milkdrop...</div>
+
+<script src="https://unpkg.com/butterchurn@2.6.7/lib/butterchurn.min.js"></script>
+<script src="https://unpkg.com/butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js"></script>
+
+<script>
+(function() {
+  const canvas = document.getElementById('canvas');
+  const statusEl = document.getElementById('status');
+  let visualizer = null, presets = {}, presetNames = [];
+  let cycleTimer = null, isInit = false;
+
+  let _freqData = new Uint8Array(512);
+  let _timeData = new Uint8Array(1024);
+  _timeData.fill(128);
+
+  function init() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    try {
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.5;
+
+      const osc = ctx.createOscillator();
+      osc.frequency.value = 0;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      osc.connect(g); g.connect(analyser); osc.start();
+
+      analyser.getByteFrequencyData = function(a) { a.set(_freqData.subarray(0, a.length)); };
+      analyser.getByteTimeDomainData = function(a) { a.set(_timeData.subarray(0, a.length)); };
+      analyser.getFloatFrequencyData = function(a) {
+        for (let i = 0; i < a.length && i < _freqData.length; i++)
+          a[i] = (_freqData[i] / 255.0) * 70 - 100;
+      };
+      analyser.getFloatTimeDomainData = function(a) {
+        for (let i = 0; i < a.length && i < _timeData.length; i++)
+          a[i] = (_timeData[i] - 128) / 128.0;
+      };
+
+      const bchurn = window.butterchurn.default || window.butterchurn;
+      if (!bchurn || typeof bchurn.createVisualizer !== 'function') {
+        throw new Error('Butterchurn createVisualizer not found in global object');
+      }
+
+      visualizer = bchurn.createVisualizer(ctx, canvas, {
+        width: canvas.width, height: canvas.height,
+        pixelRatio: dpr, textureRatio: 1,
+      });
+      visualizer.connectAudio(analyser);
+
+      presets = butterchurnPresets.getPresets();
+      presetNames = Object.keys(presets).sort();
+
+      if (presetNames.length > 0) {
+        const idx = Math.floor(Math.random() * presetNames.length);
+        visualizer.loadPreset(presets[presetNames[idx]], 0);
+      }
+      isInit = true;
+      statusEl.style.opacity = '0';
+      renderLoop();
+    } catch (e) {
+      statusEl.textContent = 'milkdrop init failed: ' + e.message;
+      console.error(e);
+    }
+  }
+
+  function renderLoop() {
+    if (!isInit) return;
+    requestAnimationFrame(renderLoop);
+    visualizer.render();
+  }
+
+  window.addEventListener('resize', function() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    if (visualizer) visualizer.setRendererSize(canvas.width, canvas.height);
+  });
+
+  // === Python API ===
+  window.setAudioData = function(freq, time) {
+    _freqData = new Uint8Array(freq);
+    _timeData = new Uint8Array(time);
+  };
+  window.loadPreset = function(name, blend) {
+    if (visualizer && presets[name]) visualizer.loadPreset(presets[name], blend || 2.0);
+  };
+  window.randomPreset = function(blend) {
+    if (!visualizer || !presetNames.length) return null;
+    const idx = Math.floor(Math.random() * presetNames.length);
+    visualizer.loadPreset(presets[presetNames[idx]], blend || 2.0);
+    return presetNames[idx];
+  };
+  window.getPresetNames = function() { return presetNames; };
+  window.setBlur = function(on) { document.body.classList.toggle('blurred', on); };
+  window.startRandomCycle = function(ms) {
+    window.stopRandomCycle();
+    cycleTimer = setInterval(function() { window.randomPreset(3.0); }, ms || 15000);
+  };
+  window.stopRandomCycle = function() {
+    if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+  };
+
+  if (document.readyState === 'complete') init();
+  else window.addEventListener('load', init);
+})();
+</script>
+</body>
+</html>

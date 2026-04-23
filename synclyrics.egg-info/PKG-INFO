@@ -9,6 +9,8 @@ Requires-Dist: requests
 Requires-Dist: unidecode
 Provides-Extra: visualizer
 Requires-Dist: pyaudio; extra == "visualizer"
+Provides-Extra: milkdrop
+Requires-Dist: PyQt6-WebEngine>=6.5; extra == "milkdrop"
 Provides-Extra: japanese
 Requires-Dist: pykakasi; extra == "japanese"
 Provides-Extra: chinese
@@ -17,3 +19,4 @@ Provides-Extra: all
 Requires-Dist: pyaudio; extra == "all"
 Requires-Dist: pykakasi; extra == "all"
 Requires-Dist: pypinyin; extra == "all"
+Requires-Dist: PyQt6-WebEngine>=6.5; extra == "all"

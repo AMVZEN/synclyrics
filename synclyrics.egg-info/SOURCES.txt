@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 synclyrics/__init__.py
 synclyrics/main.py
@@ -16,6 +17,8 @@ synclyrics/player/monitor.py
 synclyrics/ui/__init__.py
 synclyrics/ui/lyrics_widget.py
 synclyrics/ui/main_window.py
+synclyrics/ui/milkdrop.html
+synclyrics/ui/milkdrop_widget.py
 synclyrics/ui/settings_dialog.py
 synclyrics/ui/theme.py
 synclyrics/ui/track_info_widget.py

@@ -86,6 +86,7 @@ class PlayerMonitor(QThread):
         except: return 0.0
 
     def _poll(self):
+        poll_start_time = time.time()
         try:
             # We don't specify -p to let playerctl pick the best one, 
             # or we could use _get_best_player if it gets stuck on the wrong one.
@@ -134,8 +135,9 @@ class PlayerMonitor(QThread):
             if status == "Playing":
                 # Normalize position properly
                 pos_raw = meta.get("position", 0)
+                # Calibrate: the position reported was at poll_start_time
                 self.last_reported_pos = self._normalize_time(pos_raw)
-                self.last_report_time = time.time()
+                self.last_report_time = poll_start_time
 
         except subprocess.SubprocessError:
              self._handle_stopped()
